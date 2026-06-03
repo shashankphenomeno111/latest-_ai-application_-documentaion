@@ -277,7 +277,188 @@ This presentation-ready report details the problem statements, goals, backend en
 
 ---
 
-# PART 3: Unified System Architecture Diagram
+# PART 3: Micro-Component Architectures
+
+To explain how the individual systems operate, below are the flowcharts, sequences, and technical explanations for the three core microservices: the **Market Arbitrage Engine**, the **Warehouse Pledge Finance System**, and the **Weather Advisory Agent**.
+
+---
+
+## 3.1 Market Dashboard Architecture & Backend Solver
+
+The Market Dashboard compares spot prices and future predictions across different buyers. Its backend solver determines the absolute optimal financial decision for a farmer's crop yield.
+
+### A. Sequence Diagram & Backend Flow
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Farmer as Farmer Dashboard (React Client)
+    participant API as FastAPI Gateway (main.py)
+    participant Rec as recommend_agent.py (Solver)
+    participant DB as SQL Database (Postgres / SQLite)
+    participant TFT as forecast_agent.py (TFT Model Inference)
+    
+    Farmer->>API: GET /api/recommend?commodity=...&district=...&quantity=...&latitude=...&longitude=...
+    API->>Rec: Invoke build_recommendation(...)
+    
+    Note over Rec,DB: Step 1: Spatial Proximity & Node Discovery
+    Rec->>DB: Query nearest MSWC Warehouse & DCCB Bank Branch coords
+    DB-->>Rec: Return coordinates, capacities, rent rates, interest rates
+    Rec->>DB: Query active trading points (APMC, Private, Direct Mandis) in past 180 days
+    DB-->>Rec: Return active market list & locations
+    
+    Note over Rec,TFT: Step 2: Temporal Fusion Transformer Price Ingestion
+    Rec->>TFT: Request multi-horizon forecasts for all discovered markets
+    TFT->>TFT: Execute PyTorch Forecasting Model Inference (sahyadri_tft_final.ckpt)
+    TFT-->>Rec: Return quantiles (10%, 50%, 90%) for Day 0, 7, 14, 30
+    
+    Note over Rec: Step 3: Logistics & Vehicle Matching
+    Rec->>Rec: Run logistics truck matching based on crop weight (QTL)
+    Rec->>Rec: Calculate diesel expense using geodesic Haversine distance with 1.25 winding factor
+    
+    Note over Rec: Step 4: Mathematical Arbitrage Optimization
+    Rec->>Rec: Solve: Payout(Immediate Sell) vs Payout(Hold 7d, 14d, 30d with storage & interest)
+    
+    Rec-->>API: Return optimized recommend JSON payload
+    API-->>Farmer: Render 3D Isometric SVG Ribbon Charts & Strategy Action Cards
+```
+
+### B. Mathematical Formulations & Solver Equations
+The backend recommendation solver calculates Net Revenue for every market node based on parameters supplied:
+
+1. **Distance Modeling ($D$):**
+   If browser GPS coordinates $(Lat_{user}, Lng_{user})$ are supplied, the geodesic distance ($D_{geo}$) is computed via the Haversine formula. A winding factor of $1.25$ is applied to simulate actual road travel:
+   $$D = 1.25 \times D_{geo}$$
+   Otherwise, the distance is matched against district centroid databases.
+
+2. **Logistics Allocation & Fuel Cost ($C_{fuel}$):**
+   A vehicle type is selected depending on the quantity ($Q$, in quintals) to be transported. Diesel price is fixed at **₹95.00/L**:
+   * **Mini Pickup:** ($Q \le 10$ QTL) $\to$ Mileage $M = 12.0$ km/L
+   * **Pickup Truck:** ($10 < Q \le 30$ QTL) $\to$ Mileage $M = 8.0$ km/L
+   * **Medium Truck:** ($30 < Q \le 80$ QTL) $\to$ Mileage $M = 5.0$ km/L
+   * **Heavy Truck:** ($80 < Q \le 200$ QTL) $\to$ Mileage $M = 4.0$ km/L
+   * **Multi-Truck Heavy:** ($Q > 200$ QTL) $\to$ Mileage $M = 4.0$ km/L, where $N_{trucks} = \lceil Q / 200 \rceil$.
+   
+   $$\text{Diesel Cost } (C_{fuel}) = \left( \frac{D}{M} \right) \times 95.00 \times N_{trucks}$$
+
+3. **Immediate Sale Net Revenue ($R_{immediate}$):**
+   $$R_{immediate} = (P_{spot} \times Q) - C_{fuel}$$
+
+4. **Holding Sale Net Revenue ($R_{hold}(d)$) for $d$ days:**
+   Let $P_{pred}(d)$ be the TFT model predicted price at day $d \in \{7, 14, 30\}$.
+   Let $R_{rent}$ be the monthly warehouse rent per quintal.
+   Let $I_{rate}$ be the bank's annual interest rate.
+   Let $LTV$ be the loan-to-value ratio.
+   
+   * **Warehouse Storage Rent:**
+     $$\text{Rent}(d) = Q \times R_{rent} \times \left( \frac{d}{30} \right)$$
+   * **DCCB Pledge Loan Principal:**
+     $$\text{Loan} = P_{spot} \times Q \times LTV$$
+   * **Bank Interest (DCCB Branch Specific):**
+     $$\text{Interest}(d) = \text{Loan} \times I_{rate} \times \left( \frac{d}{365} \right)$$
+   * **Net Payout:**
+     $$R_{hold}(d) = (P_{pred}(d) \times Q) - C_{fuel} - \text{Rent}(d) - \text{Interest}(d)$$
+
+5. **Optimization Decision:**
+   The solver selects the day $d^* \in \{0, 7, 14, 30\}$ that maximizes the net payout. If $d^* = 0$, the strategy is `SELL_NOW`. If $d^* > 0$, the strategy is `HOLD` for $d^*$ days.
+
+---
+
+## 3.2 Warehouse & Pledge Financing Architecture
+
+This service maps nearby storage space and calculates credit lines so farmers do not engage in distress selling.
+
+### A. Architectural Diagram
+```mermaid
+graph TD
+    UserGPS[User GPS Coordinates / District Centroid] --> SpatialServ[spatial_service.py]
+    
+    subgraph "Spatial Registries (SQL Tables)"
+        MSWC[(MSWC Warehouse Directory)]
+        DCCB[(DCCB Bank Branch Directory)]
+        Soil[(Soil Testing Labs Registry)]
+        KVK[(KVK Stations Registry)]
+    end
+    
+    SpatialServ --> MSWC & DCCB & Soil & KVK
+    SpatialServ --> DistCalc[Sort all registries by Haversine Distance]
+    DistCalc --> MatchGodown[Identify nearest MSWC Godown & Rent rate]
+    DistCalc --> MatchBank[Identify nearest DCCB Bank Branch & Interest rate]
+    
+    subgraph "Client Pledge Loan Recalculator"
+        InputVal[React Input Sliders: Quantity & Hold Days]
+        LoanCalc[Loan Principal Calculation]
+        RentCalc[Rent Accumulator]
+        IntCalc[Interest Accumulator]
+    end
+    
+    MatchGodown --> RentCalc
+    MatchBank --> IntCalc
+    InputVal --> LoanCalc & RentCalc & IntCalc
+    
+    LoanCalc -->|Spot Price * Qty * LTV| EstLoan[Calculate Loan Principal]
+    RentCalc -->|Qty * Rent Rate * Hold Days / 30| EstRent[Estimate Rent Cost]
+    IntCalc -->|Loan * Interest Rate * Hold Days / 365| EstInterest[Estimate Interest Cost]
+    
+    EstLoan & EstRent & EstInterest --> FinalPayload[Interactive Dashboard Cards]
+```
+
+### B. Technical Explanation
+1. **Geodesic Proximity Matching:** The backend uses the Haversine formula to sort all warehouses, DCCB cooperative banks, soil testing labs, and KVK stations by distance from the farmer.
+2. **Dynamic Rental Calculation:** Warehousing fees are selected based on the nearest MSWC facility's database code. If the database is empty, it uses crop-specific tiers (e.g. ₹12/qtl/month for Soybean).
+3. **Pledge Financing Simulation:** To provide immediate cash, the system simulates a pledge loan where the farmer deposits the crop in the warehouse and receives a cash advance from the nearest DCCB:
+   * **Loan Value:** Calculated using the crop's LTV ratio (e.g. 75% for Soybean, 80% for Wheat).
+   * **Interest Expense:** Accrues over the holding days based on the specific branch's interest rate:
+     $$\text{Interest} = \text{Loan Value} \times \text{Bank Interest Rate} \times \left( \frac{\text{Days}}{365} \right)$$
+4. **Verified Maharashtra Registries:**
+   * **873 verified Maharashtra soil labs** parsed from `MahaAGX_SoilLabs.geojson` are matched against user coordinates, showing location, contact info, and Google Maps Direction URLs.
+   * **Coordinate Fallback Engine:** If exact row coordinates are null, the database utilizes `location_coords.json` address mapping or resolves coordinates to district centroids to prevent query crashes.
+
+---
+
+## 3.3 Weather Forecasting & Advisory Architecture
+
+Fuses real-time meteorology with agricultural recommendations to protect harvests.
+
+### A. Architectural Diagram
+```mermaid
+graph TD
+    Start[Request weather for District & Crop] --> Coords[Resolve District Centroid Coordinates]
+    Coords --> FetchMeteo[Fetch Open-Meteo 7-day forecast API]
+    FetchMeteo --> ParseData{Parse temperature, rainfall & humidity metrics}
+    
+    ParseData -->|Success| CheckLLMConfig{Is Gemini LLM API Configured?}
+    
+    CheckLLMConfig -->|Yes| GeminiFlow[Build Sahyadri Mitra context prompt]
+    GeminiFlow --> RunInference[Execute Gemini generate_content]
+    RunInference --> Localize[Translate output using cache/Gemini translations]
+    Localize --> ReturnAdvisory[Return rich Markdown Advisory response]
+    
+    CheckLLMConfig -->|No / API Failure| HeuristicFlow[Execute Offline Heuristics Rules Engine]
+    HeuristicFlow --> CheckTemp[Temp Rule: Heat stress if max_temp > 35°C]
+    HeuristicFlow --> CheckRain[Rain Rule: Drainage warning if rain > 30mm]
+    HeuristicFlow --> CheckHumidity[Humidity Rule: Pest alerts if humidity > 80%]
+    HeuristicFlow --> CropSpecific[Add crop-specific heuristics Onion, Cotton, Soybean]
+    CropSpecific --> LocalizeOffline[Compile offline localized Markdown text]
+    LocalizeOffline --> ReturnAdvisory
+```
+
+### B. Technical Explanation
+1. **Meteorology Feed:** When the endpoint `/api/weather` is queried for a district, the backend calls Open-Meteo to pull current temperature, humidity, precipitation, and wind speeds.
+2. **Double-Layered Intelligence Layer:**
+   * **Primary Layer (Gemini LLM):** If Gemini is configured, `weather_agent.py` constructs a structured prompt injecting:
+     * Weather summary stats (avg max temp, total rainfall, average humidity).
+     * Mapped crop parameters (commodity species and current growth stage).
+     * Agronomic instructions (guidelines for pest prevention, irrigation schedules).
+     Gemini evaluates the data and generates a highly localized advisory.
+   * **Secondary Layer (Offline Heuristic Fallback):** If Gemini fails or is offline, a built-in rules engine takes over:
+     * **Temperature alert:** If average max temp is $>35^\circ\text{C}$, heat stress advice is generated.
+     * **Rainfall alert:** If total rain is $>30\text{mm}$, water drainage warnings are compiled.
+     * **Humidity alert:** If relative humidity exceeds $80\%$, crop fungal blight and pest risk warnings are appended.
+3. **Translation and Localized Output:** Advisories are checked against translation caches and localized to Devanagari script (Marathi/Hindi) dynamically before transmission.
+
+---
+
+# PART 4: Unified System Architecture Diagram
 
 This end-to-end flowchart represents the unified technical architecture of Project Sahyadri 2.0:
 
