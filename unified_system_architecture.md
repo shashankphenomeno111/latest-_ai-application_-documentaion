@@ -137,5 +137,4 @@ graph TD
         ChatbotUI -->|Image Uploads & Audio Playback| AppJS
     end
     class AppJS,AuthModal,HomePanel,Dashboard,WarehousePanel,WeatherPanel,ChatbotUI,RibbonChart,PledgeCalc,GMaps ui;
-end
 ```
