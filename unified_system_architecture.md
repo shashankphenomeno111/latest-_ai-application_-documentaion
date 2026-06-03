@@ -1,9 +1,3 @@
-# Unified System Architecture: End-to-End Technical Diagram
-
-This document presents the complete unified system architecture diagram for **Project Sahyadri 2.0**. It maps the entire flow from raw data ingestion and deep learning model training, through PostgreSQL database migrations and FastAPI backend controllers, to React frontend components.
-
----
-
 ```mermaid
 graph TD
     %% Styling Classes
@@ -26,8 +20,13 @@ graph TD
         SeedScript["ingest_spatial_data.py<br/>(Coordinate swapping [lng, lat] to [lat, lng])"]
         SQLite[(sahyadri_data.db SQLite)]
         
-        S1 & S2 & S3 & S4 & S5 & S6 ──► SeedScript
-        SeedScript ──► SQLite
+        S1 --> SeedScript
+        S2 --> SeedScript
+        S3 --> SeedScript
+        S4 --> SeedScript
+        S5 --> SeedScript
+        S6 --> SeedScript
+        SeedScript --> SQLite
     end
     class SQLite datastore;
     class SeedScript script;
@@ -37,8 +36,8 @@ graph TD
         MigrateScript["migrate_sqlite_to_pg.py<br/>(Batch Size: 25,000 | psycopg2 Bulk Streamer)"]
         Postgres[(PostgreSQL Production DB Port 5432)]
         
-        SQLite ──► MigrateScript
-        MigrateScript ──►|CASCADE Truncation & Bulk Stream| Postgres
+        SQLite --> MigrateScript
+        MigrateScript -->|CASCADE Truncation & Bulk Stream| Postgres
     end
     class Postgres datastore;
     class MigrateScript script;
@@ -51,11 +50,11 @@ graph TD
         TFTModel["Temporal Fusion Transformer Training<br/>(Quantile Loss: 10%, 50%, 90% price boundaries)"]
         TFTCKPT["sahyadri_tft_final.ckpt"]
         
-        SQLite ──► ParquetExporter
-        ParquetExporter ──► ParquetFile
-        ParquetFile ──► Kaggle
-        Kaggle ──► TFTModel
-        TFTModel ──►|8 Epochs / 50,112 Steps| TFTCKPT
+        SQLite --> ParquetExporter
+        ParquetExporter --> ParquetFile
+        ParquetFile --> Kaggle
+        Kaggle --> TFTModel
+        TFTModel -->|8 Epochs / 50,112 Steps| TFTCKPT
     end
     class ParquetFile datastore;
     class TFTCKPT model;
@@ -67,9 +66,9 @@ graph TD
         SlowAPI["SlowAPI Rate Limiter<br/>(IP Capping via Redis storage)"]
         JWT["JWT Access Token Authenticator"]
         
-        Client([Farmer Client Browser]) ──►|HTTPS Request Port 8000| Nginx
-        Nginx ──► SlowAPI
-        SlowAPI ──► JWT
+        Client([Farmer Client Browser]) -->|HTTPS Request Port 8000| Nginx
+        Nginx --> SlowAPI
+        SlowAPI --> JWT
     end
     class Nginx,SlowAPI,JWT security;
 
@@ -85,21 +84,27 @@ graph TD
         DiseaseAgent["disease_agent.py<br/>(Gemini Vision Image Diagnostics)"]
         VoiceAgent["voice_agent.py<br/>(Google TTS MP3 Synthesis)"]
         
-        JWT ──► MainApp
-        MainApp ──► Middleware
+        JWT --> MainApp
+        MainApp --> Middleware
         
-        Middleware ──►|GET /api/recommend| RecAgent
-        Middleware ──►|GET /api/forecast| TFT_Inference
-        Middleware ──►|GET /api/weather| WeatherAgent
-        Middleware ──►|POST /api/chat| Router
-        Middleware ──►|POST /api/upload-image| DiseaseAgent
-        Middleware ──►|GET /api/tts| VoiceAgent
+        Middleware -->|GET /api/recommend| RecAgent
+        Middleware -->|GET /api/forecast| TFT_Inference
+        Middleware -->|GET /api/weather| WeatherAgent
+        Middleware -->|POST /api/chat| Router
+        Middleware -->|POST /api/upload-image| DiseaseAgent
+        Middleware -->|GET /api/tts| VoiceAgent
         
-        Router ──►|Route dialog tokens| WeatherAgent & DiseaseAgent & TFT_Inference & RecAgent
-        TFTCKPT ──►|Load Model Weights| TFT_Inference
-        Postgres ──►|Query markets, spatial registries| RecAgent & WeatherAgent
+        Router -->|Route dialog tokens| WeatherAgent
+        Router -->|Route dialog tokens| DiseaseAgent
+        Router -->|Route dialog tokens| TFT_Inference
+        Router -->|Route dialog tokens| RecAgent
         
-        RecAgent ──►|Fetch pricing ranges| TFT_Inference
+        TFTCKPT -->|Load Model Weights| TFT_Inference
+        
+        Postgres -->|Query markets, spatial registries| RecAgent
+        Postgres -->|Query markets, spatial registries| WeatherAgent
+        
+        RecAgent -->|Fetch pricing ranges| TFT_Inference
     end
     class MainApp,Middleware,Router,TFT_Inference,RecAgent,WeatherAgent,DiseaseAgent,VoiceAgent controller;
 
@@ -118,13 +123,19 @@ graph TD
         PledgeCalc["Pledge Finance Local Estimator<br/>(Instant slider calculations: Rent, Loan, Interest)"]
         GMaps["Google Maps directions redirect<br/>(GPS coordinates to official Business listings)"]
         
-        MainApp ──►|Serve compiled React Bundle| AppJS
-        AppJS ──► AuthModal
-        AppJS ──► HomePanel & Dashboard & WarehousePanel & WeatherPanel & ChatbotUI
+        MainApp -->|Serve compiled React Bundle| AppJS
+        AppJS --> AuthModal
+        AppJS --> HomePanel
+        AppJS --> Dashboard
+        AppJS --> WarehousePanel
+        AppJS --> WeatherPanel
+        AppJS --> ChatbotUI
         
-        Dashboard ──► RibbonChart
-        WarehousePanel ──► PledgeCalc & GMaps
-        ChatbotUI ──►|Image Uploads & Audio Playback| AppJS
+        Dashboard --> RibbonChart
+        WarehousePanel --> PledgeCalc
+        WarehousePanel --> GMaps
+        ChatbotUI -->|Image Uploads & Audio Playback| AppJS
     end
     class AppJS,AuthModal,HomePanel,Dashboard,WarehousePanel,WeatherPanel,ChatbotUI,RibbonChart,PledgeCalc,GMaps ui;
+end
 ```
