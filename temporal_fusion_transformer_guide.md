@@ -75,7 +75,93 @@ The TFT architecture consists of five major subcomponents, each designed to reso
 
 ---
 
-## 4. What We Implemented in Our Application
+## 4. Feature Engineering & Preprocessing Pipeline
+
+Before time-series variables can be consumed by the TFT network, raw transaction records undergo consolidation, cleaning, gap filling, and temporal covariate mapping. 
+
+The diagram below details the data transformation lifecycle:
+
+```mermaid
+graph TD
+    %% Ingest
+    subgraph Ingest ["1. Raw Data Extraction & Ingest"]
+        R1["APMC daily data (JSON)"]
+        R2["Private Market data (JSON)"]
+        R3["Agro-Industrial data (JSON)"]
+        Cons["Consolidation & Snappy Compression"]
+        Parq[("sahyadri_dataset.parquet<br/>(31+ Lakh Rows)")]
+        
+        R1 & R2 & R3 --> Cons --> Parq
+    end
+
+    %% Preprocess
+    subgraph Cleaning ["2. Preprocessing & Data Cleansing"]
+        P1["Date Parsing & String Casts"]
+        P2["Noise Filtering<br/>(modal_price <= ₹100/qtl dropped)"]
+        
+        Parq --> P1 --> P2
+    end
+
+    %% Weekly Resampling
+    subgraph Resampling ["3. Weekly Temporal Resampling"]
+        S1["Round Date to Sunday of the Week"]
+        S2["Group by key:<br/>(commodity, district, source, market)"]
+        S3["Aggregate values:<br/>modal_price -> mean()<br/>quantity -> sum()"]
+        S4["Resample Time-Series Gaps per Group"]
+        S5["Forward-Fill (ffill) missing rates"]
+        S6["Zero-Fill (0.0) missing volumes"]
+
+        P2 --> S1 --> S2 --> S3 --> S4 --> S5 --> S6
+    end
+
+    %% Feature Engineering
+    subgraph FeatureEng ["4. Feature Engineering & Covariate Mapping"]
+        FE1["Compute time_idx<br/>(Weeks elapsed since base date)"]
+        FE2["Compute month covariate<br/>(Categorical calendar month 1-12)"]
+        FE3["Compute volatility_4w<br/>(Rolling 4-week standard deviation)"]
+        FE4["GroupNormalizer (softplus)<br/>(Dynamic scaling of targets)"]
+
+        S6 --> FE1 & FE2 & FE3 --> FE4
+    end
+
+    %% Variable Classification
+    subgraph Categorization ["5. TFT Variable Classification"]
+        C_Static["Static Categoricals:<br/>- commodity<br/>- district<br/>- source_type<br/>- market_name"]
+        C_KnownCat["Known Categoricals:<br/>- month"]
+        C_KnownReal["Known Reals:<br/>- time_idx"]
+        C_Unknown["Unknown Reals:<br/>- modal_price (Target)<br/>- quantity<br/>- volatility_4w"]
+
+        FE4 --> C_Static & C_KnownCat & C_KnownReal & C_Unknown
+    end
+
+    %% Styling
+    style Parq fill:#e8f5e9,stroke:#2e7d32,stroke-width:1.5px
+    style S2 fill:#e1f5fe,stroke:#0288d1,stroke-width:1.5px
+    style FE3 fill:#fff3e0,stroke:#e65100,stroke-width:1.5px
+    style Categorization fill:#fffbee,stroke:#d4af37,stroke-width:1.5px
+```
+
+### Detailed Breakdown of Preprocessing Steps:
+1. **Raw Ingestion & Snappy-Parquet Compression**:
+   The raw JSON datasets are loaded, consolidated, and written to `sahyadri_dataset.parquet`. The Snappy compression format optimizes I/O speeds and ensures the 3.1 million sequences fit into system memory.
+2. **Standardization & Price Noise Filtering**:
+   Timestamps are parsed, categoricals are cast to strings, and all corrupted rates (prices $\le$ ₹100 per quintal) are discarded.
+3. **Weekly Sunday Alignment**:
+   Daily records inside each group are rounded to the Sunday of their respective weeks:
+   $$\text{week\_date} = \text{date} + ((6 - \text{weekday}) \bmod 7)\text{ days}$$
+   This aggregates volatile daily trades into smooth weekly points, representing modal average price and cumulative volume.
+4. **Gap Refilling (Resample, ffill, & 0-fill)**:
+   If a market node has no transactions for a particular week, the time-series is resampled to add that week. The price is **forward-filled (`ffill`)** from the last active trading week, and the trade volume is set to **`0.0`**.
+5. **Continuous Time Index (`time_idx`)**:
+   Aligns time-series timelines using a weekly integer index incrementing from the earliest date.
+6. **Volatility Extraction (`volatility_4w`)**:
+   Calculates a rolling 4-week standard deviation of the `modal_price` for each group, supplying the network with a proxy for market price volatility.
+7. **Per-Group Target Normalization**:
+   Applies `GroupNormalizer(transformation="softplus")` to target price columns. This dynamically standardizes crop prices based on regional history while ensuring forecasted price limits remain strictly above zero.
+
+---
+
+## 5. What We Implemented in Our Application
 
 In Project Sahyadri 2.0, the TFT model is integrated into a unified pipeline:
 
@@ -105,7 +191,7 @@ The model is trained on **Quantile Loss** to predict three bounds:
 
 ---
 
-## 5. How the Underlying Production System Works
+## 6. How the Underlying Production System Works
 
 When a farmer queries a crop forecast in the frontend, the FastAPI backend routes the query through [`forecast_agent.py`](file:///c:/Users/Shashank/OneDrive/Desktop/data_sets_fetched/market_and_transaction_data/backend/app/agents/forecast_agent.py):
 
